@@ -299,7 +299,104 @@ func NewRouter(s *store.Store) *http.ServeMux {
 
 		writeJSON(w, 200, orders)
 	})
+mux.HandleFunc("POST /recipe-to-cart", func(w http.ResponseWriter, r *http.Request) {
+		var req models.RecipeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "gecersiz_istek"})
+			return
+		}
 
+		if req.CustomerID == 0 || req.Recipe == "" {
+			writeJSON(w, 400, map[string]string{"error": "kullanici_kimligi_ve_tarif_zorunlu"})
+			return
+		}
+
+		apiKey := os.Getenv("GEMINI_API_KEY")
+		if apiKey == "" {
+			slog.Error("GEMINI_API_KEY bulunamadi")
+			writeJSON(w, 500, map[string]string{"error": "sunucu_yapilandirma_hatasi"})
+			return
+		}
+
+		client, err := genai.NewClient(r.Context(), option.WithAPIKey(apiKey))
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "yapay_zeka_baglanti_hatasi"})
+			return
+		}
+		defer client.Close()
+
+		model := client.GenerativeModel("gemini-1.5-flash")
+
+		model.SystemInstruction = &genai.Content{
+			Parts: []genai.Part{
+				genai.Text(`Sen bir e-ticaret veri ayıklama asistanısın. Kullanıcının girdiği metinde eğer tarif varsa sadece ürünleri/malzemeleri ve adetlerini çıkar. Eğer bir yemek adı varsa bu yemeğin tarifinin malzemelerini ve adetlerini çıkar. Asla açıklama yapma. Çıktı SADECE şu JSON formatında bir dizi olmalı: [{"isim": "domates", "adet": 3}]`),
+			},
+		}
+
+		model.ResponseMIMEType = "application/json"
+
+		resp, err := model.GenerateContent(r.Context(), genai.Text(req.Recipe))
+		if err != nil {
+			slog.Error("gemini uretim hatasi", "err", err)
+			writeJSON(w, 500, map[string]string{"error": "tarif_islenemedi"})
+			return
+		}
+
+		var rawJSON string
+		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
+			if txt, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
+				rawJSON = string(txt)
+			}
+		}
+
+		rawJSON = strings.TrimSpace(rawJSON)
+		if strings.HasPrefix(rawJSON, "```json") {
+			rawJSON = strings.TrimPrefix(rawJSON, "```json")
+			rawJSON = strings.TrimSuffix(rawJSON, "```")
+			rawJSON = strings.TrimSpace(rawJSON)
+		} else if strings.HasPrefix(rawJSON, "```") {
+			rawJSON = strings.TrimPrefix(rawJSON, "```")
+			rawJSON = strings.TrimSuffix(rawJSON, "```")
+			rawJSON = strings.TrimSpace(rawJSON)
+		}
+
+		var items []models.RecipeItem
+		if err := json.Unmarshal([]byte(rawJSON), &items); err != nil {
+			slog.Error("gemini json parse hatasi", "err", err, "raw", rawJSON)
+			writeJSON(w, 500, map[string]string{"error": "anlasilmayan_tarif_formati"})
+			return
+		}
+
+		addedItems := []string{}
+		notFoundItems := []string{}
+
+		for _, item := range items {
+			if item.Adet <= 0 {
+				item.Adet = 1
+			}
+
+			products, err := s.SearchProducts(r.Context(), item.Isim)
+			if err != nil || len(products) == 0 {
+				notFoundItems = append(notFoundItems, item.Isim)
+				continue
+			}
+
+			matchedProduct := products[0]
+
+			err = s.AddToCart(r.Context(), req.CustomerID, matchedProduct.ID, item.Adet)
+			if err != nil {
+				notFoundItems = append(notFoundItems, fmt.Sprintf("%s (Stok Yetersiz)", matchedProduct.Name))
+				continue
+			}
+			addedItems = append(addedItems, fmt.Sprintf("%s (%d Adet)", matchedProduct.Name, item.Adet))
+		}
+
+		writeJSON(w, 200, map[string]any{
+			"message":          "Tarif islendi",
+			"sepeteEklenenler": addedItems,
+			"bulunamayanlar":   notFoundItems,
+		})
+	})
 	return mux
 }
 
