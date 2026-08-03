@@ -87,13 +87,3 @@ type RecipeItem struct {
 	Isim string `json:"isim"`
 	Adet int    `json:"adet"`
 }
-
-type RecipeRequest struct {
-	CustomerID int64  `json:"customerId"`
-	Recipe     string `json:"recipe"`
-}
-
-type RecipeItem struct {
-	Isim string `json:"isim"`
-	Adet int    `json:"adet"`
-}
