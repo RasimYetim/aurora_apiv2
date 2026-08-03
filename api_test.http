@@ -1,0 +1,81 @@
+### Sağlık Kontrolü
+GET http://localhost:8080/healthz
+
+### Kategorileri Getir
+GET http://localhost:8080/categories
+
+### Tüm Ürünleri Getir
+GET http://localhost:8080/products
+
+### Ürünlerde Arama Yap (Örn: search=Test)
+GET http://localhost:8080/products?search=Test
+
+### Tek Bir Ürün Getir (Örn: ID 1)
+GET http://localhost:8080/products/1
+
+### Yeni Müşteri Kaydı (Register)
+POST http://localhost:8080/register
+Content-Type: application/json
+
+{
+  "name": "Ahmet",
+  "surname": "Yılmaz",
+  "email": "ahmet@example.com",
+  "password": "gizlisifre123"
+}
+
+### Müşteri Girişi (Login)
+POST http://localhost:8080/login
+Content-Type: application/json
+
+{
+  "email": "ahmet@example.com",
+  "password": "gizlisifre123"
+}
+
+### Sepete Ürün Ekle (Örn: Müşteri 1, Ürün 1, Miktar 2)
+POST http://localhost:8080/cart
+Content-Type: application/json
+
+{
+  "customerId": 1,
+  "product_id": 1,
+  "quantity": 2
+}
+
+### Müşterinin Sepetini Getir (Örn: Müşteri 1)
+GET http://localhost:8080/cart/1
+
+### Sepetteki Ürün Miktarını Güncelle
+PUT http://localhost:8080/cart
+Content-Type: application/json
+
+{
+  "customerId": 1,
+  "product_id": 1,
+  "quantity": 5
+}
+
+### Sepetten Ürün Sil (Müşteri 1, Ürün 1)
+DELETE http://localhost:8080/cart/1/1
+
+### Sepeti Tamamen Temizle (Müşteri 1)
+DELETE http://localhost:8080/cart/1
+
+### Siparişi Tamamla (Checkout)
+POST http://localhost:8080/checkout
+Content-Type: application/json
+Idempotency-Key: my-unique-order-key-123
+
+{
+  "customerId": 1,
+  "lines": [
+    {
+      "productId": 1,
+      "quantity": 2
+    }
+  ]
+}
+
+### Sipariş Geçmişini Getir (Müşteri 1)
+GET http://localhost:8080/orders/1
