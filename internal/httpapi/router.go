@@ -334,7 +334,7 @@ func NewRouter(s *store.Store) *http.ServeMux {
 
 		model.SystemInstruction = &genai.Content{
 			Parts: []genai.Part{
-				genai.Text(`Sen bir e-ticaret veri ayıklama asistanısın. Kullanıcının girdiği metinde eğer tarif varsa sadece ürünleri/malzemeleri ve adetlerini çıkar. Eğer bir yemek adı varsa bu yemeğin tarifinin malzemelerini ve adetlerini çıkar. Asla açıklama yapma. Eğer malzemenin ölçü birimi adet değilse o ölçü birimine göre yaz. adet kısmı sadece integer olmalı. Çıktı SADECE şu JSON formatında bir dizi olmalı: [{"isim": "domates", "adet": 3}]`),
+				genai.Text(`You're an e-commerce data extraction assistant. If there is a recipe in the text entered by the user, only remove the products/ingredients and quantities. If there is a dish name, extract the ingredients and customs of the recipe for this dish. Never explain. If the unit of measurement of the material is not a piece, write according to that unit of measurement. The quantity part should only be integer. The output must ONLY be an array in the following JSON format: [{"name": "tomato", "quantity": 3}]`),
 			},
 		}
 
