@@ -77,6 +77,7 @@ type Cart struct {
 	Items []CartItem `json:"items"`
 	Total int64      `json:"total"`
 }
+
 type RecipeRequest struct {
 	CustomerID int64  `json:"customerId"`
 	Recipe     string `json:"recipe"`
