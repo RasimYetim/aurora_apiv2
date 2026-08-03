@@ -330,7 +330,7 @@ func NewRouter(s *store.Store) *http.ServeMux {
 		}
 		defer client.Close()
 
-		model := client.GenerativeModel("gemini-flash-latests")
+		model := client.GenerativeModel("gemini-flash-latest")
 
 		model.SystemInstruction = &genai.Content{
 			Parts: []genai.Part{
