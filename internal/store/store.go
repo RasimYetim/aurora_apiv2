@@ -588,3 +588,51 @@ func (s *Store) OrdersByCustomer(ctx context.Context, customerID int64) ([]model
 
 	return orders, nil
 }
+
+func (s *Store) CancelOrder(ctx context.Context, orderID int64) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Siparişin durumunu kontrol et
+	var status string
+	err = tx.QueryRow(ctx, "SELECT status FROM orders WHERE id = $1", orderID).Scan(&status)
+	if err != nil {
+		return errors.New("not_found")
+	}
+
+	// 2. Replay-Safe: Zaten iptal edilmişse hata verme, başarıyla çık (stokları tekrar artırma)
+	if status == "cancelled" {
+		return nil
+	}
+
+	// 3. Sadece 'pending' siparişler iptal edilebilir
+	if status != "pending" {
+		return errors.New("not_cancellable")
+	}
+
+	// 4. Durumu güncelle
+	_, err = tx.Exec(ctx, "UPDATE orders SET status = 'cancelled' WHERE id = $1", orderID)
+	if err != nil {
+		return err
+	}
+
+	// 5. Stokları geri yatır
+	rows, err := tx.Query(ctx, "SELECT product_id, quantity FROM order_items WHERE order_id = $1", orderID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var pID int64
+		var qty int
+		if err := rows.Scan(&pID, &qty); err == nil {
+			tx.Exec(ctx, "UPDATE products SET stock = stock + $1 WHERE id = $2", qty, pID)
+		}
+	}
+
+	return tx.Commit(ctx)
+}

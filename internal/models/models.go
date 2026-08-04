@@ -87,3 +87,24 @@ type RecipeItem struct {
 	Isim string `json:"isim"`
 	Adet int    `json:"adet"`
 }
+type CancelRequest struct {
+	Action  string `json:"action"`
+	OrderID int64  `json:"orderId"`
+	Summary string `json:"summary"`
+}
+
+type SupportRequest struct {
+	Message string `json:"message"`
+}
+
+type SupportProposal struct {
+	Action               string `json:"action"`
+	OrderID              int64  `json:"orderId"`
+	Summary              string `json:"summary"`
+	RequiresConfirmation bool   `json:"requiresConfirmation"`
+}
+
+type SupportResponse struct {
+	Answer   string           `json:"answer,omitempty"`
+	Proposal *SupportProposal `json:"proposal,omitempty"`
+}

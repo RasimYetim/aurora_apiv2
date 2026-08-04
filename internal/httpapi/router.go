@@ -334,7 +334,7 @@ func NewRouter(s *store.Store) *http.ServeMux {
 
 		model.SystemInstruction = &genai.Content{
 			Parts: []genai.Part{
-				genai.Text(`You're an e-commerce data extraction assistant. If there is a recipe in the text entered by the user, only remove the products/ingredients and quantities. If there is a dish name, extract the ingredients and customs of the recipe for this dish. Never explain. If the unit of measurement of the material is not a piece, write according to that unit of measurement. The quantity part should only be integer. The output must ONLY be an array in the following JSON format: [{"isim": "tomato", "adet": 3}]`),
+				genai.Text(`You're an e-commerce data extraction assistant. If there is a recipe in the text entered by the user, only remove the products/ingredients and quantities. If there is a dish name, extract the ingredients and customs of the recipe for this dish. Never explain. If the unit of measurement of the material is not a piece, don't write according to that unit of measureme	nt. The quantity part should only be integer. The output must ONLY be an array in the following JSON format: [{"isim": "banana", "adet": 3}]`),
 			},
 		}
 
@@ -401,6 +401,98 @@ func NewRouter(s *store.Store) *http.ServeMux {
 			"sepeteEklenenler": addedItems,
 			"bulunamayanlar":   notFoundItems,
 		})
+	})
+	mux.HandleFunc("POST /orders/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.PathValue("id")
+		orderID, _ := strconv.ParseInt(idStr, 10, 64)
+
+		var req models.CancelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "bad_request"})
+			return
+		}
+
+		if req.Action != "cancel" || req.OrderID != orderID {
+			writeJSON(w, 422, map[string]string{"error": "invalid_request"})
+			return
+		}
+
+		err := s.CancelOrder(r.Context(), orderID)
+		if err != nil {
+			if err.Error() == "not_cancellable" {
+				writeJSON(w, 409, map[string]string{"error": "not_cancellable"})
+			} else if err.Error() == "not_found" {
+				writeJSON(w, 404, map[string]string{"error": "not_found"})
+			} else {
+				writeJSON(w, 500, map[string]string{"error": "server_error"})
+			}
+			return
+		}
+
+		writeJSON(w, 200, map[string]any{"orderId": orderID, "status": "cancelled"})
+	})
+
+	mux.HandleFunc("POST /support", func(w http.ResponseWriter, r *http.Request) {
+		var req models.SupportRequest
+		json.NewDecoder(r.Body).Decode(&req)
+
+		client, _ := genai.NewClient(r.Context(), option.WithAPIKey(os.Getenv("GEMINI_API_KEY")))
+		defer client.Close()
+
+		model := client.GenerativeModel("gemini-flash-latest")
+
+		model.Tools = []*genai.Tool{
+			{
+				FunctionDeclarations: []*genai.FunctionDeclaration{
+					{
+						Name:        "get_order_status",
+						Description: "Look up the current status of an order by its id.",
+						Parameters: &genai.Schema{
+							Type: genai.TypeObject,
+							Properties: map[string]*genai.Schema{
+								"order_id": {Type: genai.TypeInteger},
+							},
+							Required: []string{"order_id"},
+						},
+					},
+				},
+			},
+		}
+
+		model.SystemInstruction = &genai.Content{
+			Parts: []genai.Part{
+				genai.Text(`Sen bir destek asistanısın'. Kullanıcı sipariş iptali isterse ASLA araç kullanma! 
+            Bunun yerine SADECE şu formatta JSON dön (başka metin yazma): 
+            {"action": "cancel", "orderId": , "summary": "İptal teklifi", "requiresConfirmation": true}`),
+			},
+		}
+
+		session := model.StartChat()
+		resp, err := session.SendMessage(r.Context(), genai.Text(req.Message))
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "ai_error"})
+			return
+		}
+
+		part := resp.Candidates[0].Content.Parts[0]
+
+		if funcCall, ok := part.(genai.FunctionCall); ok {
+			if funcCall.Name == "get_order_status" {
+				writeJSON(w, 200, models.SupportResponse{Answer: "Siparişiniz kargoya verilmek üzere hazırlanıyor."})
+				return
+			}
+		}
+
+		if txt, ok := part.(genai.Text); ok {
+			var proposal models.SupportProposal
+			if err := json.Unmarshal([]byte(txt), &proposal); err == nil && proposal.Action == "cancel" {
+				writeJSON(w, 200, models.SupportResponse{Proposal: &proposal})
+				return
+			}
+
+			writeJSON(w, 200, models.SupportResponse{Answer: string(txt)})
+			return
+		}
 	})
 	return mux
 }
