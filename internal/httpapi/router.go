@@ -412,12 +412,12 @@ func NewRouter(s *store.Store) *http.ServeMux {
 			return
 		}
 
-		if req.Action != "cancel" || req.OrderID != orderID {
+		if req.Action != "cancel" || req.OrderID != orderID || req.CustomerID == 0 {
 			writeJSON(w, 422, map[string]string{"error": "invalid_request"})
 			return
 		}
 
-		err := s.CancelOrder(r.Context(), orderID)
+		err := s.CancelOrder(r.Context(), orderID, req.CustomerID)
 		if err != nil {
 			if err.Error() == "not_cancellable" {
 				writeJSON(w, 409, map[string]string{"error": "not_cancellable"})
@@ -435,6 +435,14 @@ func NewRouter(s *store.Store) *http.ServeMux {
 	mux.HandleFunc("POST /support", func(w http.ResponseWriter, r *http.Request) {
 		var req models.SupportRequest
 		json.NewDecoder(r.Body).Decode(&req)
+
+		if req.CustomerID == 0 {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
+
+		orders, _ := s.OrdersByCustomer(r.Context(), req.CustomerID)
+		ordersJSON, _ := json.Marshal(orders)
 
 		client, _ := genai.NewClient(r.Context(), option.WithAPIKey(os.Getenv("GEMINI_API_KEY")))
 		defer client.Close()
@@ -461,9 +469,14 @@ func NewRouter(s *store.Store) *http.ServeMux {
 
 		model.SystemInstruction = &genai.Content{
 			Parts: []genai.Part{
-				genai.Text(`Sen bir destek asistanısın'. Kullanıcı sipariş iptali isterse ASLA araç kullanma! 
-            Bunun yerine SADECE şu formatta JSON dön (başka metin yazma): 
-            {"action": "cancel", "orderId": , "summary": "İptal teklifi", "requiresConfirmation": true}`),
+				genai.Text(fmt.Sprintf(`Sen bir e-ticaret destek asistanısın. 
+Kullanıcının mevcut siparişleri JSON formatında şöyledir: %s
+
+KURALLAR:
+1. Kullanıcı bir sipariş hakkında bilgi almak veya iptal etmek isterse, sipariş numarasının yukarıdaki listede olup olmadığını kontrol et.
+2. Eğer sipariş numarası listede yoksa (kullanıcıya ait değilse), kullanıcıya bu siparişin kendisine ait olmadığını ve işlem yapamayacağını kibarca söyle.
+3. Kullanıcı KENDİSİNE AİT bir siparişi iptal etmek isterse ASLA araç (tool) kullanma ve metin dönme! SADECE şu formatta tam bir JSON dön:
+{"action": "cancel", "orderId": <num>, "summary": "İptal teklifi", "requiresConfirmation": true}`, string(ordersJSON))),
 			},
 		}
 

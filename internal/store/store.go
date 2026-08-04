@@ -589,7 +589,7 @@ func (s *Store) OrdersByCustomer(ctx context.Context, customerID int64) ([]model
 	return orders, nil
 }
 
-func (s *Store) CancelOrder(ctx context.Context, orderID int64) error {
+func (s *Store) CancelOrder(ctx context.Context, orderID int64, customerID int64) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -598,9 +598,14 @@ func (s *Store) CancelOrder(ctx context.Context, orderID int64) error {
 
 	// 1. Siparişin durumunu kontrol et
 	var status string
-	err = tx.QueryRow(ctx, "SELECT status FROM orders WHERE id = $1", orderID).Scan(&status)
+	var dbCustomerID int64
+	err = tx.QueryRow(ctx, "SELECT status, customer_id FROM orders WHERE id = $1", orderID).Scan(&status, &dbCustomerID)
 	if err != nil {
 		return errors.New("not_found")
+	}
+
+	if dbCustomerID != customerID {
+		return errors.New("unauthorized")
 	}
 
 	// 2. Replay-Safe: Zaten iptal edilmişse hata verme, başarıyla çık (stokları tekrar artırma)

@@ -88,13 +88,15 @@ type RecipeItem struct {
 	Adet int    `json:"adet"`
 }
 type CancelRequest struct {
-	Action  string `json:"action"`
-	OrderID int64  `json:"orderId"`
-	Summary string `json:"summary"`
+	Action     string `json:"action"`
+	OrderID    int64  `json:"orderId"`
+	Summary    string `json:"summary"`
+	CustomerID int64  `json:"customerId"`
 }
 
 type SupportRequest struct {
-	Message string `json:"message"`
+	Message    string `json:"message"`
+	CustomerID int64  `json:"customerId"`
 }
 
 type SupportProposal struct {
