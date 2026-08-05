@@ -34,6 +34,21 @@ func getPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+
+func checkoutLines(ctx context.Context, t *testing.T, s *store.Store, customerID int64, lines []models.Line, idemKey string) (int64, error) {
+	var token string
+	err := s.Pool.QueryRow(ctx, "INSERT INTO carts (customer_id, status) VALUES ($1, 'active') RETURNING token").Scan(&token)
+	if err != nil {
+		t.Fatalf("failed to create cart: %v", err)
+	}
+	var cartID int64
+	s.Pool.QueryRow(ctx, "SELECT id FROM carts WHERE token = $1", token).Scan(&cartID)
+	for _, l := range lines {
+		s.Pool.Exec(ctx, "INSERT INTO cart_items (cart_id, product_id, qty) VALUES ($1, $2, $3)", cartID, l.ProductID, l.Qty)
+	}
+	return s.Checkout(ctx, customerID, token, idemKey)
+}
+
 func TestStore_Checkout(t *testing.T) {
 	pool := getPool(t)
 	defer pool.Close()
@@ -62,7 +77,7 @@ func TestStore_Checkout(t *testing.T) {
 
 	t.Run("Ordering more than stock returns ErrOutOfStock and leaves stock unchanged", func(t *testing.T) {
 		lines := []models.Line{{ProductID: productID, Qty: 20}} // more than stock
-		_, err := s.Checkout(ctx, customerID, lines, "idem-1")
+		_, err := checkoutLines(ctx, t, s, customerID, lines, "idem-1")
 		if !errors.Is(err, models.ErrOutOfStock) {
 			t.Fatalf("expected models.ErrOutOfStock, got %v", err)
 		}
@@ -79,7 +94,7 @@ func TestStore_Checkout(t *testing.T) {
 			{ProductID: productID, Qty: 2},
 			{ProductID: productID, Qty: 3},
 		}
-		orderID, err := s.Checkout(ctx, customerID, lines, "idem-2")
+		orderID, err := checkoutLines(ctx, t, s, customerID, lines, "idem-2")
 		if err != nil {
 			t.Fatalf("checkout failed: %v", err)
 		}
@@ -110,7 +125,7 @@ func TestStore_Checkout(t *testing.T) {
 		lines := []models.Line{
 			{ProductID: productID, Qty: 2},
 		}
-		orderID, err := s.Checkout(ctx, customerID, lines, "idem-3")
+		orderID, err := checkoutLines(ctx, t, s, customerID, lines, "idem-3")
 		if err != nil {
 			t.Fatalf("checkout failed: %v", err)
 		}
@@ -146,11 +161,14 @@ func TestCheckoutHandler(t *testing.T) {
 	var productID int64
 	pool.QueryRow(ctx, `INSERT INTO products (name, unit_price, stock) VALUES ('Handler Product', 1000, 10) RETURNING id`).Scan(&productID)
 
-	doReq := func(body string, idem string) *http.Response {
+	doReq := func(body string, idem string, token string) *http.Response {
 		req := httptest.NewRequest("POST", "/checkout", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		if idem != "" {
 			req.Header.Set("Idempotency-Key", idem)
+		}
+		if token != "" {
+			req.Header.Set("X-Cart-Token", token)
 		}
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
@@ -159,7 +177,7 @@ func TestCheckoutHandler(t *testing.T) {
 
 	t.Run("Empty lines returns 422", func(t *testing.T) {
 		body := fmt.Sprintf(`{"customerId": %d, "lines": []}`, customerID)
-		res := doReq(body, "")
+		res := doReq(body, "", "dummy-token")
 		if res.StatusCode != 422 {
 			t.Errorf("expected 422, got %d", res.StatusCode)
 		}
@@ -167,7 +185,7 @@ func TestCheckoutHandler(t *testing.T) {
 
 	t.Run("Unknown customerId returns 404", func(t *testing.T) {
 		body := fmt.Sprintf(`{"customerId": 999999, "lines": [{"productId": %d, "quantity": 1}]}`, productID)
-		res := doReq(body, "")
+		res := doReq(body, "", "dummy-token")
 		if res.StatusCode != 404 {
 			t.Errorf("expected 404, got %d", res.StatusCode)
 		}
@@ -181,7 +199,13 @@ func TestCheckoutHandler(t *testing.T) {
 
 	t.Run("Idempotency key replay returns same orderId", func(t *testing.T) {
 		body := fmt.Sprintf(`{"customerId": %d, "lines": [{"productId": %d, "quantity": 2}]}`, customerID, productID)
-		res1 := doReq(body, "my-idem-key")
+		
+		var t1 string
+		pool.QueryRow(ctx, "INSERT INTO carts (customer_id, status) VALUES ($1, 'active') RETURNING token", customerID).Scan(&t1)
+		var cid1 int64
+		pool.QueryRow(ctx, "SELECT id FROM carts WHERE token = $1", t1).Scan(&cid1)
+		pool.Exec(ctx, "INSERT INTO cart_items (cart_id, product_id, qty) VALUES ($1, $2, $3)", cid1, productID, 2)
+		res1 := doReq(body, "my-idem-key", t1)
 		if res1.StatusCode != 200 {
 			t.Fatalf("first request failed: %d", res1.StatusCode)
 		}
@@ -189,7 +213,13 @@ func TestCheckoutHandler(t *testing.T) {
 		json.NewDecoder(res1.Body).Decode(&resp1)
 		orderID1 := resp1["orderId"]
 
-		res2 := doReq(body, "my-idem-key")
+		
+		var t2 string
+		pool.QueryRow(ctx, "INSERT INTO carts (customer_id, status) VALUES ($1, 'active') RETURNING token", customerID).Scan(&t2)
+		var cid2 int64
+		pool.QueryRow(ctx, "SELECT id FROM carts WHERE token = $1", t2).Scan(&cid2)
+		pool.Exec(ctx, "INSERT INTO cart_items (cart_id, product_id, qty) VALUES ($1, $2, $3)", cid2, productID, 2)
+		res2 := doReq(body, "my-idem-key", t2)
 		if res2.StatusCode != 200 {
 			t.Fatalf("second request failed: %d", res2.StatusCode)
 		}
@@ -210,7 +240,13 @@ func TestCheckoutHandler(t *testing.T) {
 
 	t.Run("Over-stock returns 409 and leaves stock unchanged", func(t *testing.T) {
 		body := fmt.Sprintf(`{"customerId": %d, "lines": [{"productId": %d, "quantity": 50}]}`, customerID, productID)
-		res := doReq(body, "another-key")
+		
+		var t3 string
+		pool.QueryRow(ctx, "INSERT INTO carts (customer_id, status) VALUES ($1, 'active') RETURNING token", customerID).Scan(&t3)
+		var cid3 int64
+		pool.QueryRow(ctx, "SELECT id FROM carts WHERE token = $1", t3).Scan(&cid3)
+		pool.Exec(ctx, "INSERT INTO cart_items (cart_id, product_id, qty) VALUES ($1, $2, $3)", cid3, productID, 50)
+		res := doReq(body, "another-key", t3)
 		if res.StatusCode != 409 {
 			t.Errorf("expected 409, got %d", res.StatusCode)
 		}
@@ -239,8 +275,16 @@ func TestOrderHandler(t *testing.T) {
 
 	// Create an order
 	reqBody := fmt.Sprintf(`{"customerId": %d, "lines": [{"productId": %d, "quantity": 1}]}`, customerID, productID)
+	
+	var tOrder string
+	pool.QueryRow(ctx, "INSERT INTO carts (customer_id, status) VALUES ($1, 'active') RETURNING token", customerID).Scan(&tOrder)
+	var cidOrder int64
+	pool.QueryRow(ctx, "SELECT id FROM carts WHERE token = $1", tOrder).Scan(&cidOrder)
+	pool.Exec(ctx, "INSERT INTO cart_items (cart_id, product_id, qty) VALUES ($1, $2, $3)", cidOrder, productID, 1)
+
 	req := httptest.NewRequest("POST", "/checkout", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Cart-Token", tOrder)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -350,7 +394,7 @@ func TestStore_Checkout_Concurrency(t *testing.T) {
 		go func(cID int64) {
 			defer wg.Done()
 			lines := []models.Line{{ProductID: productID, Qty: 1}}
-			_, err := s.Checkout(ctx, cID, lines, "")
+			_, err := checkoutLines(ctx, t, s, cID, lines, "")
 			if err == nil {
 				atomic.AddInt32(&successCount, 1)
 			} else if errors.Is(err, models.ErrOutOfStock) {
@@ -494,3 +538,145 @@ func TestBudget_WriteSkew(t *testing.T) {
 		}
 	})
 }
+
+func TestStore_Checkout_FlashSale_Concurrency(t *testing.T) {
+	pool := getPool(t)
+	defer pool.Close()
+	s := store.NewStore(pool)
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, `TRUNCATE products, customers, orders, deals, deal_purchases, carts, cart_items CASCADE`)
+	if err != nil {
+		t.Fatalf("failed to truncate tables: %v", err)
+	}
+
+	// Create Product with plenty of stock
+	var productID int64
+	err = pool.QueryRow(ctx, `INSERT INTO products (name, unit_price, stock) VALUES ('Flash Deal Product', 2000, 200) RETURNING id`).Scan(&productID)
+	if err != nil {
+		t.Fatalf("failed to insert product: %v", err)
+	}
+
+	t.Run("Global Cap Concurrency", func(t *testing.T) {
+		// Set deal allocation_cap=1
+		var dealID int64
+		err = pool.QueryRow(ctx, `
+			INSERT INTO deals (product_id, sale_price_cents, starts_at, ends_at, allocation_cap, per_customer_cap, sold) 
+			VALUES ($1, 1000, now() - interval '1 hour', now() + interval '1 hour', 1, 1, 0) RETURNING id
+		`, productID).Scan(&dealID)
+		if err != nil {
+			t.Fatalf("failed to insert deal: %v", err)
+		}
+
+		// Insert 20 buyers
+		var customerIDs []int64
+		for i := 0; i < 20; i++ {
+			var id int64
+			pool.QueryRow(ctx, `INSERT INTO customers (name, surname, email, password) VALUES ('Test', 'User', $1, 'pw') RETURNING id`, fmt.Sprintf("buyer%d@flash.com", i)).Scan(&id)
+			customerIDs = append(customerIDs, id)
+		}
+
+		var wg sync.WaitGroup
+		var successCount int32
+		var failCount int32
+
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func(cID int64, idx int) {
+				defer wg.Done()
+				lines := []models.Line{{ProductID: productID, Qty: 1}}
+				_, err := checkoutLines(ctx, t, s, cID, lines, fmt.Sprintf("global-idem-%d", idx))
+				if err == nil {
+					atomic.AddInt32(&successCount, 1)
+				} else if errors.Is(err, models.ErrDealSoldOut) {
+					atomic.AddInt32(&failCount, 1)
+				} else {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}(customerIDs[i], i)
+		}
+		wg.Wait()
+
+		if successCount != 1 {
+			t.Errorf("expected 1 success, got %d", successCount)
+		}
+		if failCount != 19 {
+			t.Errorf("expected 19 failures, got %d", failCount)
+		}
+
+		var finalStock int
+		pool.QueryRow(ctx, `SELECT stock FROM products WHERE id = $1`, productID).Scan(&finalStock)
+		if finalStock != 199 { // 200 - 1
+			t.Errorf("expected stock 199, got %d", finalStock)
+		}
+
+		var finalSold int
+		pool.QueryRow(ctx, `SELECT sold FROM deals WHERE id = $1`, dealID).Scan(&finalSold)
+		if finalSold != 1 {
+			t.Errorf("expected 1 sold, got %d", finalSold)
+		}
+
+		// Loser carts should stay active
+		var activeCarts int
+		pool.QueryRow(ctx, `SELECT count(*) FROM carts WHERE status = 'active'`).Scan(&activeCarts)
+		if activeCarts != 19 {
+			t.Errorf("expected 19 active carts, got %d", activeCarts)
+		}
+	})
+
+	t.Run("Per-Customer Cap Concurrency", func(t *testing.T) {
+		// Set deal allocation_cap high (e.g. 200), per_customer_cap=2
+		var dealID int64
+		err = pool.QueryRow(ctx, `
+			INSERT INTO deals (product_id, sale_price_cents, starts_at, ends_at, allocation_cap, per_customer_cap, sold) 
+			VALUES ($1, 1000, now() - interval '1 hour', now() + interval '1 hour', 200, 2, 0) RETURNING id
+		`, productID).Scan(&dealID)
+		if err != nil {
+			t.Fatalf("failed to insert deal: %v", err)
+		}
+
+		var customerID int64
+		pool.QueryRow(ctx, `INSERT INTO customers (name, surname, email, password) VALUES ('Greedy', 'Buyer', 'greedy@flash.com', 'pw') RETURNING id`).Scan(&customerID)
+
+		var wg sync.WaitGroup
+		var successCount int32
+		var failCount int32
+
+		for i := 0; i < 5; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				lines := []models.Line{{ProductID: productID, Qty: 1}}
+				_, err := checkoutLines(ctx, t, s, customerID, lines, fmt.Sprintf("percust-idem-%d", idx))
+				if err == nil {
+					atomic.AddInt32(&successCount, 1)
+				} else if errors.Is(err, models.ErrPurchaseLimit) {
+					atomic.AddInt32(&failCount, 1)
+				} else {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}(i)
+		}
+		wg.Wait()
+
+		if successCount != 2 {
+			t.Errorf("expected 2 successes, got %d", successCount)
+		}
+		if failCount != 3 {
+			t.Errorf("expected 3 failures, got %d", failCount)
+		}
+
+		var finalSold int
+		pool.QueryRow(ctx, `SELECT sold FROM deals WHERE id = $1`, dealID).Scan(&finalSold)
+		if finalSold != 2 {
+			t.Errorf("expected 2 sold on deal, got %d", finalSold)
+		}
+
+		var dpQty int
+		pool.QueryRow(ctx, `SELECT qty FROM deal_purchases WHERE deal_id = $1 AND customer_id = $2`, dealID, customerID).Scan(&dpQty)
+		if dpQty != 2 {
+			t.Errorf("expected 2 deal_purchases quantity, got %d", dpQty)
+		}
+	})
+}
+

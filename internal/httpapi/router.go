@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ import (
 func NewRouter(s *store.Store) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
+
+
 	mux.HandleFunc("GET /products", func(w http.ResponseWriter, r *http.Request) {
 		searchQuery := r.URL.Query().Get("search")
 		categoryIDStr := r.URL.Query().Get("category_id")
@@ -69,24 +72,27 @@ func NewRouter(s *store.Store) *http.ServeMux {
 			writeJSON(w, 422, map[string]string{"error": "invalid_request"})
 			return
 		}
-		if req.CustomerID == 0 || len(req.Lines) == 0 {
+		if req.CustomerID == 0 {
 			writeJSON(w, 422, map[string]string{"error": "invalid_request"})
 			return
 		}
-		for _, l := range req.Lines {
-			if l.Qty <= 0 {
-				writeJSON(w, 422, map[string]string{"error": "invalid_request"})
-				return
-			}
+		cartToken := r.Header.Get("X-Cart-Token")
+		if cartToken == "" {
+			writeJSON(w, 422, map[string]string{"error": "invalid_request"})
+			return
 		}
 		idem := r.Header.Get("Idempotency-Key")
 
-		orderID, err := s.Checkout(r.Context(), req.CustomerID, req.Lines, idem)
+		orderID, err := s.Checkout(r.Context(), req.CustomerID, cartToken, idem)
 		switch {
 		case err == nil:
 			writeJSON(w, 200, map[string]int64{"orderId": orderID})
 		case errors.Is(err, models.ErrOutOfStock):
 			writeJSON(w, 409, map[string]string{"error": "out_of_stock"})
+		case errors.Is(err, models.ErrDealSoldOut):
+			writeJSON(w, 409, map[string]string{"error": "deal_sold_out"})
+		case errors.Is(err, models.ErrPurchaseLimit):
+			writeJSON(w, 409, map[string]string{"error": "purchase_limit"})
 		default:
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
@@ -589,5 +595,13 @@ KURALLAR:
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+	b := buf.Bytes()
+	if len(b) > 0 && b[len(b)-1] == '\n' {
+		b = b[:len(b)-1]
+	}
+	_, _ = w.Write(b)
 }

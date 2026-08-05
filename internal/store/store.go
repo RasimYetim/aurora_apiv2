@@ -38,17 +38,41 @@ func (s *Store) RegisterUser(ctx context.Context, name, surname, email, password
 	return id, nil
 }
 
-func (s *Store) Checkout(ctx context.Context, customerID int64, lines []models.Line, idemKey string) (int64, error) {
-	aggLines := make(map[int64]int)
-	for _, l := range lines {
-		aggLines[l.ProductID] += l.Qty
-	}
-
+func (s *Store) Checkout(ctx context.Context, customerID int64, cartToken string, idemKey string) (int64, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	var cartID int64
+	err = tx.QueryRow(ctx, "UPDATE carts SET status = 'converted', customer_id = $1, updated_at = now() WHERE token = $2 AND status = 'active' RETURNING id", customerID, cartToken).Scan(&cartID)
+	if err != nil {
+		return 0, fmt.Errorf("claim cart: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, "SELECT product_id, SUM(qty) FROM cart_items WHERE cart_id = $1 GROUP BY product_id", cartID)
+	if err != nil {
+		return 0, fmt.Errorf("cart items: %w", err)
+	}
+	type cartItem struct {
+		productID int64
+		qty       int
+	}
+	var items []cartItem
+	for rows.Next() {
+		var item cartItem
+		if err := rows.Scan(&item.productID, &item.qty); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		items = append(items, item)
+	}
+	rows.Close()
+
+	if len(items) == 0 {
+		return 0, fmt.Errorf("empty cart")
+	}
 
 	var total int64
 	type capturedItem struct {
@@ -58,20 +82,58 @@ func (s *Store) Checkout(ctx context.Context, customerID int64, lines []models.L
 	}
 	var captured []capturedItem
 
-	for pid, qty := range aggLines {
-		var unitPrice int64
-		err := tx.QueryRow(ctx, `UPDATE products SET stock=stock-$1 WHERE id=$2 AND stock>=$1 RETURNING unit_price`, qty, pid).Scan(&unitPrice)
+	for _, item := range items {
+		pid := item.productID
+		qty := item.qty
+
+		var basePrice int64
+		err := tx.QueryRow(ctx, "UPDATE products SET stock=stock-$1 WHERE id=$2 AND stock>=$1 RETURNING unit_price", qty, pid).Scan(&basePrice)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if err.Error() == "no rows in result set" {
 				return 0, models.ErrOutOfStock
 			}
 			return 0, fmt.Errorf("update stock for product %d: %w", pid, err)
 		}
-		total += unitPrice * int64(qty)
+
+		effectivePrice := basePrice
+
+		var dealID int64
+		var salePrice int64
+		var perCustomerCap int
+		
+		err = tx.QueryRow(ctx, "UPDATE deals SET sold = sold + $1 WHERE product_id = $2 AND now() BETWEEN starts_at AND ends_at AND sold + $1 <= allocation_cap RETURNING id, sale_price_cents, per_customer_cap", qty, pid).Scan(&dealID, &salePrice, &perCustomerCap)
+
+		if err != nil {
+			if err.Error() == "no rows in result set" {
+				var dealExists bool
+				errEx := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM deals WHERE product_id = $1 AND now() BETWEEN starts_at AND ends_at)", pid).Scan(&dealExists)
+				if errEx != nil {
+					return 0, fmt.Errorf("check deal exists: %w", errEx)
+				}
+				if dealExists {
+					return 0, models.ErrDealSoldOut
+				}
+			} else {
+				return 0, fmt.Errorf("update deals: %w", err)
+			}
+		} else {
+			var reservedQty int
+			errUpsert := tx.QueryRow(ctx, "INSERT INTO deal_purchases (deal_id, customer_id, qty) SELECT CAST($1 AS bigint), CAST($2 AS bigint), CAST($3 AS integer) WHERE CAST($3 AS integer) <= CAST($4 AS integer) ON CONFLICT (deal_id, customer_id) DO UPDATE SET qty = deal_purchases.qty + EXCLUDED.qty WHERE deal_purchases.qty + EXCLUDED.qty <= CAST($4 AS integer) RETURNING qty", dealID, customerID, qty, perCustomerCap).Scan(&reservedQty)
+			
+			if errUpsert != nil {
+				if errUpsert.Error() == "no rows in result set" {
+					return 0, models.ErrPurchaseLimit
+				}
+				return 0, fmt.Errorf("upsert deal_purchases: %w", errUpsert)
+			}
+			effectivePrice = salePrice
+		}
+
+		total += effectivePrice * int64(qty)
 		captured = append(captured, capturedItem{
 			productID: pid,
 			qty:       qty,
-			unitPrice: unitPrice,
+			unitPrice: effectivePrice,
 		})
 	}
 
@@ -81,13 +143,13 @@ func (s *Store) Checkout(ctx context.Context, customerID int64, lines []models.L
 	}
 
 	var orderID int64
-	err = tx.QueryRow(ctx, `INSERT INTO orders (customer_id, total, idempotency_key) VALUES ($1, $2, $3) RETURNING id`, customerID, total, dbIdemKey).Scan(&orderID)
+	err = tx.QueryRow(ctx, "INSERT INTO orders (customer_id, total, idempotency_key) VALUES ($1, $2, $3) RETURNING id", customerID, total, dbIdemKey).Scan(&orderID)
 	if err != nil {
 		return 0, fmt.Errorf("insert order: %w", err)
 	}
 
 	for _, c := range captured {
-		_, err := tx.Exec(ctx, `INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES ($1, $2, $3, $4)`, orderID, c.productID, c.qty, c.unitPrice)
+		_, err := tx.Exec(ctx, "INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES ($1, $2, $3, $4)", orderID, c.productID, c.qty, c.unitPrice)
 		if err != nil {
 			return 0, fmt.Errorf("insert order item %d: %w", c.productID, err)
 		}
@@ -483,23 +545,21 @@ func (s *Store) ProductsByCategory(ctx context.Context, categoryID int64) ([]mod
 }
 
 func (s *Store) SearchProducts(ctx context.Context, searchQuery string) ([]models.Product, error) {
-
 	query := `
-       SELECT 
-          p.id, p.name, p.unit_price, p.stock, p.category_id,
-          COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
-       FROM products p
-       LEFT JOIN product_images pi ON p.id = pi.product_id
-       WHERE p.name % $1 OR p.name ILIKE '%' || $1 || '%'
-       GROUP BY p.id, p.name, p.unit_price, p.stock, p.category_id
-       ORDER BY similarity(p.name, $1) DESC, p.id ASC`
-
-	rows, err := s.Pool.Query(ctx, query, searchQuery)
+		SELECT 
+			p.id, p.name, p.unit_price, p.stock, p.category_id,
+			COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
+		FROM products p
+		LEFT JOIN product_images pi ON p.id = pi.product_id
+		WHERE p.name ILIKE $1
+		GROUP BY p.id
+		ORDER BY p.id`
+	searchTerm := "%" + searchQuery + "%"
+	rows, err := s.Pool.Query(ctx, query, searchTerm)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
 	out := []models.Product{}
 	for rows.Next() {
 		var p models.Product
@@ -725,7 +785,7 @@ func (s *Store) GetStoreAnalytics(ctx context.Context) (models.AnalyticsPayload,
 			CASE 
 				WHEN days_since_last_order <= 30 AND order_count >= 5 AND total_spent > 1000 THEN 'Şampiyonlar'
 				WHEN days_since_last_order <= 60 AND order_count >= 3 THEN 'Sadık Müşteriler'
-				WHEN days_since_last_order > 60 AND order_count >= 4 THEN 'Riskli (Uyuyan Devler)'
+				WHEN days_since_last_order > 60 AND order_count >= 4 THEN 'Riskli '
 				WHEN days_since_last_order <= 15 AND order_count = 1 THEN 'Yeni Müşteriler'
 				ELSE 'Standart Müşteri'
 			END AS segment

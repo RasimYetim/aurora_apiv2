@@ -5,6 +5,8 @@ import (
 )
 
 var ErrOutOfStock = errors.New("out of stock")
+var ErrDealSoldOut = errors.New("deal sold out")
+var ErrPurchaseLimit = errors.New("purchase limit")
 
 type Category struct {
 	ID       int64  `json:"id"`
@@ -151,4 +153,38 @@ type AnalyticsPayload struct {
 type AnalyticsResponse struct {
 	RawData      AnalyticsPayload `json:"rawData"`
 	GeminiReport string           `json:"geminiReport"`
+}
+
+type Banner struct {
+	ID       int64  `json:"id"`
+	Headline string `json:"headline"`
+	Subhead  string `json:"subhead"`
+	CTAHref  string `json:"ctaHref"`
+	ImageURL string `json:"imageUrl"`
+}
+
+type FeaturedProduct struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	UnitPrice    int64  `json:"unitPrice"`
+	DisplayPrice int64  `json:"displayPrice"`
+	OnSale       bool   `json:"onSale"`
+	Stock        int    `json:"stock"`
+}
+
+type Deal struct {
+	ProductID int64  `json:"productId"`
+	Name      string `json:"name"`
+	UnitPrice int64  `json:"unitPrice"`
+	SalePrice int64  `json:"salePrice"`
+	EndsAt    string `json:"endsAt"`
+	Remaining int    `json:"remaining"`
+	SoldOut   bool   `json:"soldOut"`
+}
+
+type Storefront struct {
+	Banners    []Banner          `json:"banners"`
+	Categories []Category        `json:"categories"`
+	Featured   []FeaturedProduct `json:"featured"`
+	Deals      []Deal            `json:"deals"`
 }
