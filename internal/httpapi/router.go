@@ -507,6 +507,27 @@ KURALLAR:
 			return
 		}
 	})
+	
+	mux.HandleFunc("GET /products/{id}/recommendations", func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.PathValue("id")
+		productID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": "gecersiz_urun_id"})
+			return
+		}
+
+		recommendations, err := s.GetRecommendations(r.Context(), productID, 4)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "tavsiyeler_alinamadi"})
+			return
+		}
+
+		if recommendations == nil {
+			recommendations = []models.Recommendation{}
+		}
+
+		writeJSON(w, 200, recommendations)
+	})
 	return mux
 }
 

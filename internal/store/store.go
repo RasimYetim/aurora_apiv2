@@ -596,7 +596,6 @@ func (s *Store) CancelOrder(ctx context.Context, orderID int64, customerID int64
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Siparişin durumunu kontrol et
 	var status string
 	var dbCustomerID int64
 	err = tx.QueryRow(ctx, "SELECT status, customer_id FROM orders WHERE id = $1", orderID).Scan(&status, &dbCustomerID)
@@ -608,23 +607,19 @@ func (s *Store) CancelOrder(ctx context.Context, orderID int64, customerID int64
 		return errors.New("unauthorized")
 	}
 
-	// 2. Replay-Safe: Zaten iptal edilmişse hata verme, başarıyla çık (stokları tekrar artırma)
 	if status == "cancelled" {
 		return nil
 	}
 
-	// 3. Sadece 'pending' siparişler iptal edilebilir
 	if status != "pending" {
 		return errors.New("not_cancellable")
 	}
 
-	// 4. Durumu güncelle
 	_, err = tx.Exec(ctx, "UPDATE orders SET status = 'cancelled' WHERE id = $1", orderID)
 	if err != nil {
 		return err
 	}
 
-	// 5. Stokları geri yatır
 	rows, err := tx.Query(ctx, "SELECT product_id, quantity FROM order_items WHERE order_id = $1", orderID)
 	if err != nil {
 		return err
@@ -640,4 +635,39 @@ func (s *Store) CancelOrder(ctx context.Context, orderID int64, customerID int64
 	}
 
 	return tx.Commit(ctx)
+}
+
+func (s *Store) GetRecommendations(ctx context.Context, productID int64, limit int) ([]models.Recommendation, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	query := `
+        SELECT p.id, p.name, COUNT(oi2.order_id) as frequency
+        FROM order_items oi1
+        JOIN order_items oi2 ON oi1.order_id = oi2.order_id
+        JOIN products p ON p.id = oi2.product_id
+        WHERE oi1.product_id = $1 AND oi2.product_id != $1
+        GROUP BY p.id, p.name
+        ORDER BY frequency DESC
+        LIMIT $2
+    `
+
+	rows, err := tx.Query(ctx, query, productID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var recommendations []models.Recommendation
+	for rows.Next() {
+		var r models.Recommendation
+		if err := rows.Scan(&r.ProductID, &r.Name, &r.Frequency); err != nil {
+			return nil, err
+		}
+		recommendations = append(recommendations, r)
+	}
+
+	return recommendations, nil
 }

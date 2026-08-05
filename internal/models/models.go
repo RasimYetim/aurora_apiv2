@@ -1,6 +1,8 @@
 package models
 
-import "errors"
+import (
+	"errors"
+)
 
 var ErrOutOfStock = errors.New("out of stock")
 
@@ -109,4 +111,10 @@ type SupportProposal struct {
 type SupportResponse struct {
 	Answer   string           `json:"answer,omitempty"`
 	Proposal *SupportProposal `json:"proposal,omitempty"`
+}
+
+type Recommendation struct {
+	ProductID int64   `json:"productId"`
+	Name      string  `json:"name"`
+	Frequency float64 `json:"frequency"`
 }
