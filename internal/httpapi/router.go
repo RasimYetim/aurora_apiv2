@@ -23,7 +23,6 @@ func NewRouter(s *store.Store) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
 
-
 	mux.HandleFunc("GET /products", func(w http.ResponseWriter, r *http.Request) {
 		searchQuery := r.URL.Query().Get("search")
 		categoryIDStr := r.URL.Query().Get("category_id")
@@ -588,6 +587,15 @@ KURALLAR:
 	})
 	mux.HandleFunc("GET /admin/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "admin/analytics.html")
+	})
+	mux.HandleFunc("GET /storefront", func(w http.ResponseWriter, r *http.Request) {
+		response, err := s.GetStorefront(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "vitrin_verileri_toplanamadi"})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, response)
 	})
 	return mux
 }

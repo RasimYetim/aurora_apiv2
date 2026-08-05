@@ -157,34 +157,18 @@ type AnalyticsResponse struct {
 
 type Banner struct {
 	ID       int64  `json:"id"`
-	Headline string `json:"headline"`
-	Subhead  string `json:"subhead"`
-	CTAHref  string `json:"ctaHref"`
 	ImageURL string `json:"imageUrl"`
 }
 
-type FeaturedProduct struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	UnitPrice    int64  `json:"unitPrice"`
-	DisplayPrice int64  `json:"displayPrice"`
-	OnSale       bool   `json:"onSale"`
-	Stock        int    `json:"stock"`
+type FlashSale struct {
+	Product            Product `json:"product"` // Mevcut Product struct'ını kullanır
+	DiscountPercentage int     `json:"discountPercentage"`
+	RemainingStock     int     `json:"remainingStock"`
 }
 
-type Deal struct {
-	ProductID int64  `json:"productId"`
-	Name      string `json:"name"`
-	UnitPrice int64  `json:"unitPrice"`
-	SalePrice int64  `json:"salePrice"`
-	EndsAt    string `json:"endsAt"`
-	Remaining int    `json:"remaining"`
-	SoldOut   bool   `json:"soldOut"`
-}
-
-type Storefront struct {
-	Banners    []Banner          `json:"banners"`
-	Categories []Category        `json:"categories"`
-	Featured   []FeaturedProduct `json:"featured"`
-	Deals      []Deal            `json:"deals"`
+type StorefrontResponse struct {
+	Banners          []Banner    `json:"banners"`
+	Categories       []Category  `json:"categories"`
+	FlashSales       []FlashSale `json:"flashSales"`
+	FeaturedProducts []Product   `json:"featuredProducts"`
 }

@@ -100,7 +100,7 @@ func (s *Store) Checkout(ctx context.Context, customerID int64, cartToken string
 		var dealID int64
 		var salePrice int64
 		var perCustomerCap int
-		
+
 		err = tx.QueryRow(ctx, "UPDATE deals SET sold = sold + $1 WHERE product_id = $2 AND now() BETWEEN starts_at AND ends_at AND sold + $1 <= allocation_cap RETURNING id, sale_price_cents, per_customer_cap", qty, pid).Scan(&dealID, &salePrice, &perCustomerCap)
 
 		if err != nil {
@@ -119,7 +119,7 @@ func (s *Store) Checkout(ctx context.Context, customerID int64, cartToken string
 		} else {
 			var reservedQty int
 			errUpsert := tx.QueryRow(ctx, "INSERT INTO deal_purchases (deal_id, customer_id, qty) SELECT CAST($1 AS bigint), CAST($2 AS bigint), CAST($3 AS integer) WHERE CAST($3 AS integer) <= CAST($4 AS integer) ON CONFLICT (deal_id, customer_id) DO UPDATE SET qty = deal_purchases.qty + EXCLUDED.qty WHERE deal_purchases.qty + EXCLUDED.qty <= CAST($4 AS integer) RETURNING qty", dealID, customerID, qty, perCustomerCap).Scan(&reservedQty)
-			
+
 			if errUpsert != nil {
 				if errUpsert.Error() == "no rows in result set" {
 					return 0, models.ErrPurchaseLimit
@@ -836,4 +836,43 @@ func (s *Store) GetStoreAnalytics(ctx context.Context) (models.AnalyticsPayload,
 	}
 
 	return payload, nil
+}
+
+func (s *Store) GetStorefront(ctx context.Context) (models.StorefrontResponse, error) {
+	var response models.StorefrontResponse
+
+	categories, err := s.Categories(ctx)
+	if err == nil && categories != nil {
+		response.Categories = categories
+	} else {
+		response.Categories = []models.Category{}
+	}
+
+	products, err := s.Products(ctx)
+	if err == nil && products != nil {
+		if len(products) > 4 {
+			response.FeaturedProducts = products[:4]
+		} else {
+			response.FeaturedProducts = products
+		}
+	} else {
+		response.FeaturedProducts = []models.Product{}
+		products = []models.Product{} // Hata varsa boş kalsın
+	}
+
+	response.Banners = []models.Banner{
+		{ID: 1, ImageURL: "https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?q=80&w=2070"}, // Örnek kampanya
+		{ID: 2, ImageURL: "https://images.unsplash.com/photo-1607082350899-7e105aa886ae?q=80&w=2070"},
+	}
+
+	response.FlashSales = []models.FlashSale{}
+	if len(products) > 0 {
+		response.FlashSales = append(response.FlashSales, models.FlashSale{
+			Product:            products[0],
+			DiscountPercentage: 40,
+			RemainingStock:     15, // Flaş indirim için ayrılan özel stok
+		})
+	}
+
+	return response, nil
 }
