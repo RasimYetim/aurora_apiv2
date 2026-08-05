@@ -483,21 +483,23 @@ func (s *Store) ProductsByCategory(ctx context.Context, categoryID int64) ([]mod
 }
 
 func (s *Store) SearchProducts(ctx context.Context, searchQuery string) ([]models.Product, error) {
+
 	query := `
-		SELECT 
-			p.id, p.name, p.unit_price, p.stock, p.category_id,
-			COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
-		FROM products p
-		LEFT JOIN product_images pi ON p.id = pi.product_id
-		WHERE p.name ILIKE $1
-		GROUP BY p.id
-		ORDER BY p.id`
-	searchTerm := "%" + searchQuery + "%"
-	rows, err := s.Pool.Query(ctx, query, searchTerm)
+       SELECT 
+          p.id, p.name, p.unit_price, p.stock, p.category_id,
+          COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
+       FROM products p
+       LEFT JOIN product_images pi ON p.id = pi.product_id
+       WHERE p.name % $1 OR p.name ILIKE '%' || $1 || '%'
+       GROUP BY p.id, p.name, p.unit_price, p.stock, p.category_id
+       ORDER BY similarity(p.name, $1) DESC, p.id ASC`
+
+	rows, err := s.Pool.Query(ctx, query, searchQuery)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	out := []models.Product{}
 	for rows.Next() {
 		var p models.Product
@@ -670,4 +672,108 @@ func (s *Store) GetRecommendations(ctx context.Context, productID int64, limit i
 	}
 
 	return recommendations, nil
+}
+
+func (s *Store) GetStoreAnalytics(ctx context.Context) (models.AnalyticsPayload, error) {
+	var payload models.AnalyticsPayload
+	payload.Period = "Son 30 Gün"
+
+	payload.VIPCustomers = []models.VIPCustomer{}
+	payload.TopProducts = []models.TopProduct{}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return payload, err
+	}
+	defer tx.Rollback(ctx)
+
+	metricsQuery := `
+		SELECT 
+			COALESCE(SUM(total), 0)::FLOAT AS total_revenue,
+			COUNT(id) AS total_orders,
+			COALESCE(AVG(total), 0)::FLOAT AS average_order_value
+		FROM orders
+		WHERE status != 'cancelled' AND created_at >= NOW() - INTERVAL '30 days'
+	`
+	err = tx.QueryRow(ctx, metricsQuery).Scan(
+		&payload.Metrics.TotalRevenue,
+		&payload.Metrics.TotalOrders,
+		&payload.Metrics.AverageOrderValue,
+	)
+	if err != nil {
+		return payload, fmt.Errorf("mağaza metrikleri hesaplanırken hata oluştu: %v", err)
+	}
+
+	rfmQuery := `
+		WITH rfm_base AS (
+			SELECT 
+				c.id AS customer_id,
+				c.name || ' ' || c.surname AS full_name,
+				EXTRACT(DAY FROM NOW() - MAX(o.created_at))::INT AS days_since_last_order,
+				COUNT(o.id) AS order_count,
+				SUM(o.total)::FLOAT AS total_spent
+			FROM orders o
+			JOIN customers c ON o.customer_id = c.id
+			WHERE o.status != 'cancelled'
+			GROUP BY c.id, c.name, c.surname
+		)
+		SELECT 
+			customer_id,
+			full_name,
+			days_since_last_order,
+			order_count,
+			total_spent,
+			CASE 
+				WHEN days_since_last_order <= 30 AND order_count >= 5 AND total_spent > 1000 THEN 'Şampiyonlar'
+				WHEN days_since_last_order <= 60 AND order_count >= 3 THEN 'Sadık Müşteriler'
+				WHEN days_since_last_order > 60 AND order_count >= 4 THEN 'Riskli (Uyuyan Devler)'
+				WHEN days_since_last_order <= 15 AND order_count = 1 THEN 'Yeni Müşteriler'
+				ELSE 'Standart Müşteri'
+			END AS segment
+		FROM rfm_base
+		ORDER BY total_spent DESC
+		LIMIT 10;
+	`
+	rows, err := tx.Query(ctx, rfmQuery)
+	if err != nil {
+		return payload, fmt.Errorf("rfm analizi çekilirken hata oluştu: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var c models.VIPCustomer
+		if err := rows.Scan(&c.CustomerID, &c.FullName, &c.DaysSinceLastOrder, &c.OrderCount, &c.TotalSpent, &c.Segment); err != nil {
+			return payload, fmt.Errorf("müşteri verisi okunurken hata: %v", err)
+		}
+		payload.VIPCustomers = append(payload.VIPCustomers, c)
+	}
+
+	topProductsQuery := `
+		SELECT 
+			p.id AS product_id,
+			p.name,
+			SUM(oi.quantity) AS total_sold,
+			SUM(oi.quantity * oi.unit_price)::FLOAT AS revenue
+		FROM order_items oi
+		JOIN products p ON p.id = oi.product_id
+		JOIN orders o ON o.id = oi.order_id
+		WHERE o.status != 'cancelled' AND o.created_at >= NOW() - INTERVAL '30 days'
+		GROUP BY p.id, p.name
+		ORDER BY revenue DESC
+		LIMIT 5;
+	`
+	pRows, err := tx.Query(ctx, topProductsQuery)
+	if err != nil {
+		return payload, fmt.Errorf("en çok satanlar çekilirken hata oluştu: %v", err)
+	}
+	defer pRows.Close()
+
+	for pRows.Next() {
+		var tp models.TopProduct
+		if err := pRows.Scan(&tp.ProductID, &tp.Name, &tp.TotalSold, &tp.Revenue); err != nil {
+			return payload, fmt.Errorf("ürün verisi okunurken hata: %v", err)
+		}
+		payload.TopProducts = append(payload.TopProducts, tp)
+	}
+
+	return payload, nil
 }

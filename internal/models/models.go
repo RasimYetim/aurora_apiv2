@@ -118,3 +118,37 @@ type Recommendation struct {
 	Name      string  `json:"name"`
 	Frequency float64 `json:"frequency"`
 }
+
+type StoreMetrics struct {
+	TotalRevenue      float64 `json:"totalRevenue"`
+	TotalOrders       int     `json:"totalOrders"`
+	AverageOrderValue float64 `json:"averageOrderValue"`
+}
+
+type VIPCustomer struct {
+	CustomerID         int64   `json:"customerId"`
+	FullName           string  `json:"fullName"`
+	DaysSinceLastOrder int     `json:"daysSinceLastOrder"`
+	OrderCount         int     `json:"orderCount"`
+	TotalSpent         float64 `json:"totalSpent"`
+	Segment            string  `json:"segment"`
+}
+
+type TopProduct struct {
+	ProductID int64   `json:"productId"`
+	Name      string  `json:"name"`
+	TotalSold int     `json:"totalSold"`
+	Revenue   float64 `json:"revenue"`
+}
+
+type AnalyticsPayload struct {
+	Period       string        `json:"period"`
+	Metrics      StoreMetrics  `json:"metrics"`
+	VIPCustomers []VIPCustomer `json:"vipCustomers"`
+	TopProducts  []TopProduct  `json:"topProducts"`
+}
+
+type AnalyticsResponse struct {
+	RawData      AnalyticsPayload `json:"rawData"`
+	GeminiReport string           `json:"geminiReport"`
+}

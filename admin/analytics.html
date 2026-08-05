@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aurora | Yönetici Paneli</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f0ff;
+            color: #333;
+            margin: 0;
+            padding: 30px;
+        }
+        .header {
+            background: linear-gradient(135deg, #5E35B1, #D32F2F);
+            color: white;
+            padding: 25px;
+            border-radius: 16px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+        }
+        h1 { margin: 0; font-size: 24px;}
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 24px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: white;
+            padding: 24px;
+            border-radius: 16px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+            border-top: 5px solid #5E35B1;
+        }
+        .card-red { border-top: 5px solid #D32F2F; }
+        .metric-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #5E35B1;
+            margin-top: 10px;
+        }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 14px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        th { background-color: #ede7f6; color: #5E35B1; font-weight: 600; border-radius: 8px 8px 0 0;}
+        .ai-report {
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 16px;
+            border-left: 6px solid #D32F2F;
+            font-size: 1.1em;
+            line-height: 1.7;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+            margin-bottom: 30px;
+        }
+        .badge {
+            background-color: #5E35B1;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>Aurora Yönetici Paneli</h1>
+    <p style="margin: 5px 0 0 0; opacity: 0.9;">E-Ticaret Analitiği & Yapay Zeka Özeti</p>
+</div>
+
+<div id="loading" style="text-align:center; padding: 50px; font-size: 1.2em; color: #5E35B1;">
+    <b>Analizler hesaplanıyor ve Gemini raporu yazılıyor...</b>
+</div>
+
+<div id="dashboard" style="display:none;">
+    <div class="ai-report" id="geminiReport"></div>
+
+    <h2 style="color: #5E35B1;">Genel Performans</h2>
+    <div class="grid">
+        <div class="card">
+            <h3 style="margin:0; color:#666;">Toplam Ciro</h3>
+            <div class="metric-value" id="totalRevenue">₺0</div>
+        </div>
+        <div class="card card-red">
+            <h3 style="margin:0; color:#666;">Toplam Sipariş</h3>
+            <div class="metric-value" id="totalOrders" style="color: #D32F2F;">0</div>
+        </div>
+        <div class="card">
+            <h3 style="margin:0; color:#666;">Sepet Ortalaması</h3>
+            <div class="metric-value" id="aov">₺0</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3 style="margin:0; color:#666;">VIP Müşteriler (RFM)</h3>
+            <table id="vipTable">
+                <tr><th>Müşteri</th><th>Segment</th><th>Harcama</th></tr>
+            </table>
+        </div>
+        <div class="card card-red">
+            <h3 style="margin:0; color:#666;">En Çok Satan Ürünler</h3>
+            <table id="topProductsTable">
+                <tr><th>Ürün</th><th>Satış Adedi</th><th>Ciro</th></tr>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Sayfa açıldığında Go API'sine istek at
+    fetch('/admin/analytics')
+        .then(response => response.json())
+        .then(data => {
+            // Yükleniyor yazısını gizle, paneli göster
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+
+            // Gemini Raporunu Ekrana Bas (Satır atlamalarını HTML <br> etiketine çevirerek)
+            document.getElementById('geminiReport').innerHTML =
+                "<strong style='color:#D32F2F;'>🤖 Gemini Satış Müdürü:</strong><br><br>" +
+                data.geminiReport.replace(/\n/g, '<br>');
+
+            // Metrikleri Doldur
+            document.getElementById('totalRevenue').innerText = '₺' + data.rawData.metrics.totalRevenue.toFixed(2);
+            document.getElementById('totalOrders').innerText = data.rawData.metrics.totalOrders;
+            document.getElementById('aov').innerText = '₺' + data.rawData.metrics.averageOrderValue.toFixed(2);
+
+            // VIP Müşteri Tablosunu Doldur
+            const vipTable = document.getElementById('vipTable');
+            data.rawData.vipCustomers.forEach(c => {
+                vipTable.innerHTML += `<tr>
+                        <td>${c.fullName}</td>
+                        <td><span class="badge">${c.segment}</span></td>
+                        <td><strong>₺${c.totalSpent.toFixed(2)}</strong></td>
+                    </tr>`;
+            });
+
+            // En Çok Satanlar Tablosunu Doldur
+            const topTable = document.getElementById('topProductsTable');
+            data.rawData.topProducts.forEach(p => {
+                topTable.innerHTML += `<tr>
+                        <td>${p.name}</td>
+                        <td>${p.totalSold} adet</td>
+                        <td><strong>₺${p.revenue.toFixed(2)}</strong></td>
+                    </tr>`;
+            });
+        })
+        .catch(err => {
+            document.getElementById('loading').innerHTML = "<span style='color:red;'>Veriler çekilirken bir hata oluştu. Sunucuyu kontrol edin.</span>";
+            console.error("API Hatası:", err);
+        });
+</script>
+</body>
+</html>

@@ -45,6 +45,11 @@ func NewRouter(s *store.Store) *http.ServeMux {
 			writeJSON(w, 500, map[string]string{"error": "internal"})
 			return
 		}
+
+		if ps == nil {
+			ps = []models.Product{}
+		}
+
 		writeJSON(w, 200, ps)
 	})
 
@@ -507,7 +512,7 @@ KURALLAR:
 			return
 		}
 	})
-	
+
 	mux.HandleFunc("GET /products/{id}/recommendations", func(w http.ResponseWriter, r *http.Request) {
 		idStr := r.PathValue("id")
 		productID, err := strconv.ParseInt(idStr, 10, 64)
@@ -527,6 +532,56 @@ KURALLAR:
 		}
 
 		writeJSON(w, 200, recommendations)
+	})
+	mux.HandleFunc("GET /admin/analytics", func(w http.ResponseWriter, r *http.Request) {
+		payload, err := s.GetStoreAnalytics(r.Context())
+		if err != nil {
+			slog.Error("analytics hatasi", "err", err)
+			writeJSON(w, 500, map[string]string{"error": "analitik_verileri_alinamadi"})
+			return
+		}
+
+		payloadBytes, _ := json.Marshal(payload)
+		payloadJSON := string(payloadBytes)
+
+		client, err := genai.NewClient(r.Context(), option.WithAPIKey(os.Getenv("GEMINI_API_KEY")))
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "ai_client_error"})
+			return
+		}
+		defer client.Close()
+
+		model := client.GenerativeModel("gemini-flash-latest")
+
+		prompt := fmt.Sprintf(`Sen Aurora e-ticaret şirketinin deneyimli satış müdürüsün. 
+    Aşağıdaki ham SQL verilerini incele. Yönetim kuruluna son 30 günün özetini veren, 
+    VIP müşterilerimizi (Şampiyonlar vb.) yorumlayan ve sepet ortalamamızın sağlığını değerlendiren 
+    profesyonel ama anlaşılır, en fazla 2 paragraflık bir yönetici özeti yaz.
+    
+    İşte Veriler: %s`, payloadJSON)
+
+		resp, err := model.GenerateContent(r.Context(), genai.Text(prompt))
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "ai_rapor_olusturulamadi"})
+			return
+		}
+
+		var geminiReport string
+		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
+			if txt, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
+				geminiReport = string(txt)
+			}
+		}
+
+		response := models.AnalyticsResponse{
+			RawData:      payload,
+			GeminiReport: geminiReport,
+		}
+
+		writeJSON(w, 200, response)
+	})
+	mux.HandleFunc("GET /admin/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "admin/analytics.html")
 	})
 	return mux
 }
