@@ -16,12 +16,13 @@ type Category struct {
 }
 
 type Product struct {
-	ID         int64    `json:"id"`
-	Name       string   `json:"name"`
-	UnitPrice  int64    `json:"unitPrice"`
-	Stock      int      `json:"stock"`
-	CategoryID int64    `json:"categoryId"`
-	Images     []string `json:"images"`
+	ID            int64    `json:"id"`
+	Name          string   `json:"name"`
+	UnitPrice     int64    `json:"unitPrice"`
+	OriginalPrice int64    `json:"originalPrice"`
+	Stock         int      `json:"stock"`
+	CategoryID    int64    `json:"categoryId"`
+	Images        []string `json:"images"`
 }
 
 type OrderItem struct {
@@ -70,14 +71,16 @@ type CheckoutReq struct {
 }
 
 type CartItem struct {
-	ProductID   int64  `json:"productId"`
-	ProductName string `json:"productName"`
-	Quantity    int    `json:"quantity"`
-	UnitPrice   int64  `json:"unitPrice"`
-	ImageURL    string `json:"imageUrl"`
+	ProductID     int64  `json:"productId"`
+	ProductName   string `json:"productName"`
+	Quantity      int    `json:"quantity"`
+	UnitPrice     int64  `json:"unitPrice"`
+	OriginalPrice int64  `json:"originalPrice"`
+	ImageURL      string `json:"imageUrl"`
 }
 
 type Cart struct {
+	Token string     `json:"token"`
 	Items []CartItem `json:"items"`
 	Total int64      `json:"total"`
 }

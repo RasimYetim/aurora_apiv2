@@ -437,8 +437,14 @@ func (s *Store) ReleaseExpiredCarts(ctx context.Context) error {
 }
 
 func (s *Store) GetCart(ctx context.Context, customerID int64) (*models.Cart, error) {
+	var cartToken string
+	err := s.Pool.QueryRow(ctx, "SELECT token FROM carts WHERE customer_id = $1 AND status = 'active'", customerID).Scan(&cartToken)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
 	query := `
-		SELECT c.product_id, p.name, c.qty, p.unit_price,
+		SELECT c.product_id, p.name, c.qty, COALESCE((SELECT MIN(sale_price_cents) FROM deals WHERE product_id = p.id AND now() BETWEEN starts_at AND ends_at AND sold < allocation_cap), p.unit_price), p.unit_price,
 		       COALESCE((SELECT url FROM product_images WHERE product_id = p.id ORDER BY position LIMIT 1), '') as image_url
 		FROM cart_items c
 		JOIN products p ON c.product_id = p.id
@@ -453,13 +459,14 @@ func (s *Store) GetCart(ctx context.Context, customerID int64) (*models.Cart, er
 	defer rows.Close()
 
 	cart := &models.Cart{
+		Token: cartToken,
 		Items: []models.CartItem{},
 		Total: 0,
 	}
 
 	for rows.Next() {
 		var item models.CartItem
-		if err := rows.Scan(&item.ProductID, &item.ProductName, &item.Quantity, &item.UnitPrice, &item.ImageURL); err != nil {
+		if err := rows.Scan(&item.ProductID, &item.ProductName, &item.Quantity, &item.UnitPrice, &item.OriginalPrice, &item.ImageURL); err != nil {
 			return nil, err
 		}
 		cart.Items = append(cart.Items, item)
@@ -483,7 +490,7 @@ func (s *Store) Product(ctx context.Context, id int64) (models.Product, error) {
 	var p models.Product
 	query := `
 		SELECT 
-			p.id, p.name, p.unit_price, p.stock, p.category_id,
+			p.id, p.name, COALESCE((SELECT MIN(sale_price_cents) FROM deals WHERE product_id = p.id AND now() BETWEEN starts_at AND ends_at AND sold < allocation_cap), p.unit_price), p.unit_price, p.stock, p.category_id,
 			COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
 		FROM products p
 		LEFT JOIN product_images pi ON p.id = pi.product_id
@@ -496,7 +503,7 @@ func (s *Store) Product(ctx context.Context, id int64) (models.Product, error) {
 func (s *Store) Products(ctx context.Context) ([]models.Product, error) {
 	query := `
 		SELECT 
-			p.id, p.name, p.unit_price, p.stock, p.category_id,
+			p.id, p.name, COALESCE((SELECT MIN(sale_price_cents) FROM deals WHERE product_id = p.id AND now() BETWEEN starts_at AND ends_at AND sold < allocation_cap), p.unit_price), p.unit_price, p.stock, p.category_id,
 			COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
 		FROM products p
 		LEFT JOIN product_images pi ON p.id = pi.product_id
@@ -510,7 +517,7 @@ func (s *Store) Products(ctx context.Context) ([]models.Product, error) {
 	out := []models.Product{}
 	for rows.Next() {
 		var p models.Product
-		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.OriginalPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -521,7 +528,7 @@ func (s *Store) Products(ctx context.Context) ([]models.Product, error) {
 func (s *Store) ProductsByCategory(ctx context.Context, categoryID int64) ([]models.Product, error) {
 	query := `
 		SELECT 
-			p.id, p.name, p.unit_price, p.stock, p.category_id,
+			p.id, p.name, COALESCE((SELECT MIN(sale_price_cents) FROM deals WHERE product_id = p.id AND now() BETWEEN starts_at AND ends_at AND sold < allocation_cap), p.unit_price), p.unit_price, p.stock, p.category_id,
 			COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
 		FROM products p
 		LEFT JOIN product_images pi ON p.id = pi.product_id
@@ -536,7 +543,7 @@ func (s *Store) ProductsByCategory(ctx context.Context, categoryID int64) ([]mod
 	out := []models.Product{}
 	for rows.Next() {
 		var p models.Product
-		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.OriginalPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -547,7 +554,7 @@ func (s *Store) ProductsByCategory(ctx context.Context, categoryID int64) ([]mod
 func (s *Store) SearchProducts(ctx context.Context, searchQuery string) ([]models.Product, error) {
 	query := `
 		SELECT 
-			p.id, p.name, p.unit_price, p.stock, p.category_id,
+			p.id, p.name, COALESCE((SELECT MIN(sale_price_cents) FROM deals WHERE product_id = p.id AND now() BETWEEN starts_at AND ends_at AND sold < allocation_cap), p.unit_price), p.unit_price, p.stock, p.category_id,
 			COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
 		FROM products p
 		LEFT JOIN product_images pi ON p.id = pi.product_id
@@ -563,7 +570,7 @@ func (s *Store) SearchProducts(ctx context.Context, searchQuery string) ([]model
 	out := []models.Product{}
 	for rows.Next() {
 		var p models.Product
-		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.OriginalPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -867,10 +874,24 @@ func (s *Store) GetStorefront(ctx context.Context) (models.StorefrontResponse, e
 
 	response.FlashSales = []models.FlashSale{}
 	if len(products) > 0 {
+		p := products[0]
+		var exists bool
+		s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM deals WHERE product_id = $1 AND ends_at > now())", p.ID).Scan(&exists)
+		if !exists {
+			salePrice := p.OriginalPrice * 60 / 100 // 40% discount
+			s.Pool.Exec(ctx, "INSERT INTO deals (product_id, sale_price_cents, starts_at, ends_at, allocation_cap, per_customer_cap, sold) VALUES ($1, $2, now(), now() + interval '1 day', 15, 5, 0)", p.ID, salePrice)
+			p.UnitPrice = salePrice
+		}
+		
+		var discount int
+		if p.OriginalPrice > 0 {
+			discount = int(100 - (p.UnitPrice * 100 / p.OriginalPrice))
+		}
+
 		response.FlashSales = append(response.FlashSales, models.FlashSale{
-			Product:            products[0],
-			DiscountPercentage: 40,
-			RemainingStock:     15, // Flaş indirim için ayrılan özel stok
+			Product:            p,
+			DiscountPercentage: discount,
+			RemainingStock:     15,
 		})
 	}
 
