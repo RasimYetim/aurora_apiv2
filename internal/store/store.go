@@ -558,9 +558,9 @@ func (s *Store) SearchProducts(ctx context.Context, searchQuery string) ([]model
           COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
        FROM products p
        LEFT JOIN product_images pi ON p.id = pi.product_id
-       WHERE p.name % $1 OR p.name ILIKE '%' || $1 || '%'
+       WHERE similarity(p.name, $1) > 0.15 OR p.name ILIKE '%' || $1 || '%' OR word_similarity($1, p.name) > 0.3
        GROUP BY p.id, p.name, p.unit_price, p.stock, p.category_id
-       ORDER BY similarity(p.name, $1) DESC, p.id ASC`
+       ORDER BY GREATEST(similarity(p.name, $1), word_similarity($1, p.name)) DESC, p.id ASC`
 
 	rows, err := s.Pool.Query(ctx, query, searchQuery)
 	if err != nil {
