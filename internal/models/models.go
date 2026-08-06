@@ -164,7 +164,7 @@ type Banner struct {
 }
 
 type FlashSale struct {
-	Product            Product `json:"product"` // Mevcut Product struct'ını kullanır
+	Product            Product `json:"product"`
 	DiscountPercentage int     `json:"discountPercentage"`
 	RemainingStock     int     `json:"remainingStock"`
 }

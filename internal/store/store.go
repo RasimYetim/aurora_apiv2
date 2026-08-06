@@ -496,7 +496,7 @@ func (s *Store) Product(ctx context.Context, id int64) (models.Product, error) {
 		LEFT JOIN product_images pi ON p.id = pi.product_id
 		WHERE p.id = $1
 		GROUP BY p.id`
-	err := s.Pool.QueryRow(ctx, query, id).Scan(&p.ID, &p.Name, &p.UnitPrice, &p.Stock, &p.CategoryID, &p.Images)
+	err := s.Pool.QueryRow(ctx, query, id).Scan(&p.ID, &p.Name, &p.UnitPrice, &p.OriginalPrice, &p.Stock, &p.CategoryID, &p.Images)
 	return p, err
 }
 
