@@ -553,24 +553,25 @@ func (s *Store) ProductsByCategory(ctx context.Context, categoryID int64) ([]mod
 
 func (s *Store) SearchProducts(ctx context.Context, searchQuery string) ([]models.Product, error) {
 	query := `
-		SELECT 
-			p.id, p.name, COALESCE((SELECT MIN(sale_price_cents) FROM deals WHERE product_id = p.id AND now() BETWEEN starts_at AND ends_at AND sold < allocation_cap), p.unit_price), p.unit_price, p.stock, p.category_id,
-			COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
-		FROM products p
-		LEFT JOIN product_images pi ON p.id = pi.product_id
-		WHERE p.name ILIKE $1
-		GROUP BY p.id
-		ORDER BY p.id`
-	searchTerm := "%" + searchQuery + "%"
-	rows, err := s.Pool.Query(ctx, query, searchTerm)
+       SELECT 
+          p.id, p.name, p.unit_price, p.stock, p.category_id,
+          COALESCE(array_agg(pi.url ORDER BY pi.position) FILTER (WHERE pi.url IS NOT NULL), '{}') as images
+       FROM products p
+       LEFT JOIN product_images pi ON p.id = pi.product_id
+       WHERE p.name % $1 OR p.name ILIKE '%' || $1 || '%'
+       GROUP BY p.id, p.name, p.unit_price, p.stock, p.category_id
+       ORDER BY similarity(p.name, $1) DESC, p.id ASC`
+
+	rows, err := s.Pool.Query(ctx, query, searchQuery)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	out := []models.Product{}
 	for rows.Next() {
 		var p models.Product
-		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.OriginalPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.UnitPrice, &p.Stock, &p.CategoryID, &p.Images); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -882,7 +883,7 @@ func (s *Store) GetStorefront(ctx context.Context) (models.StorefrontResponse, e
 			s.Pool.Exec(ctx, "INSERT INTO deals (product_id, sale_price_cents, starts_at, ends_at, allocation_cap, per_customer_cap, sold) VALUES ($1, $2, now(), now() + interval '1 day', 15, 5, 0)", p.ID, salePrice)
 			p.UnitPrice = salePrice
 		}
-		
+
 		var discount int
 		if p.OriginalPrice > 0 {
 			discount = int(100 - (p.UnitPrice * 100 / p.OriginalPrice))
